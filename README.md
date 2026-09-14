@@ -3,8 +3,12 @@
 Shared GitHub Actions workflows for the Live9 estate. **This repo is meant to be
 public**: GitHub only lets a *private* reusable workflow be called from inside
 its own organisation, and the products live in three (`rowbotapp`, `evercoach`,
-`live9tech`). It contains no secrets; callers pass credentials in with
-`secrets: inherit`.
+`live9tech`). It contains no secrets; callers pass credentials in explicitly.
+
+**Don't use `secrets: inherit`.** It only forwards secrets to reusable workflows
+in the *same* organisation, so from `rowbotapp` or `evercoach` the call fails
+before any step runs: "Secret CLOUDFLARE_API_TOKEN is required, but not provided
+while calling".
 
 ## `static-site.yml`
 
@@ -16,7 +20,8 @@ are in `live9-infra/edge/README.md`.
 jobs:
   docs:
     uses: live9tech/live9-actions/.github/workflows/static-site.yml@v1
-    secrets: inherit
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     with:
       site-dir: apps/docs                     # where wrangler.jsonc is
       environment: staging                    # staging | production

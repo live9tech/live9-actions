@@ -9,7 +9,7 @@ name: Static site
 # Why this repo is PUBLIC and separate from live9-infra: GitHub only lets a
 # private reusable workflow be called from the same organisation, and the
 # products live in three (rowbotapp, evercoach, live9tech). Nothing secret is
-# in here — credentials arrive from the caller via `secrets: inherit`.
+# in here — credentials arrive from the caller, passed explicitly (`secrets: inherit` does not cross organisations).
 #
 # Two modes:
 #   deploy   `wrangler deploy --env <environment>` — the version goes live on
