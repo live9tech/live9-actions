@@ -27,15 +27,17 @@ jobs:
         NODE_ENV=production
 ```
 
-The caller's repo (or org) needs:
+The caller needs:
 
-| Kind | Name | Value |
-|---|---|---|
-| variable | `CLOUDFLARE_ACCOUNT_ID` | the Live9 Cloudflare account |
-| secret | `CLOUDFLARE_API_TOKEN` | *Account › Workers Scripts: Edit* + *Zone › Workers Routes: Edit* + *Zone › DNS: Edit* on the site zones only |
-
-Set both at org level once per org, and put the production values behind
-the `production` GitHub environment if you want required reviewers on deploys.
+- a **repo** secret `CLOUDFLARE_API_TOKEN`: an account-owned token in the Live9
+  Cloudflare account with *Account › Workers Scripts: Edit* plus *Zone › Zone:
+  Read, Workers Routes: Edit, DNS: Edit* on the site zones only. It has to be
+  set per repo: the orgs are on GitHub Free, which doesn't expose org secrets or
+  variables to private repos. To put required reviewers on production deploys,
+  set it as a `production` environment secret instead.
+- `account_id` pinned in the site's `wrangler.jsonc`
+  (`086100e6ba220a927c9b0a9e879002df`). The workflow checks for it, and it
+  replaces a `CLOUDFLARE_ACCOUNT_ID` variable.
 
 Pin callers to a tag (`@v1`), not `@main`. A change here then only reaches a
 product once it moves to the new tag.
