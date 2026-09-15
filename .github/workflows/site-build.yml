@@ -83,6 +83,7 @@ jobs:
 
       - name: Detect package manager
         id: pm
+        working-directory: ${{ inputs.site-dir }}
         run: |
           if [ -f pnpm-lock.yaml ] || [ -f "$GITHUB_WORKSPACE/pnpm-lock.yaml" ]; then echo "pm=pnpm" >> "$GITHUB_OUTPUT"
           elif [ -f bun.lock ] || [ -f bun.lockb ]; then echo "pm=bun" >> "$GITHUB_OUTPUT"
@@ -90,6 +91,9 @@ jobs:
 
       - if: steps.pm.outputs.pm == 'pnpm'
         uses: pnpm/action-setup@v4
+        with:
+          # The pnpm version comes from packageManager in the site's own package.json.
+          package_json_file: ${{ inputs.site-dir }}/package.json
       - if: steps.pm.outputs.pm == 'bun'
         uses: oven-sh/setup-bun@v2
       - uses: actions/setup-node@v4
