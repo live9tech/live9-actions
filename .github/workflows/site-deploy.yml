@@ -3,8 +3,8 @@ name: Site deploy
 # Deploy a build produced by site-build.yml to one environment. Used twice:
 #
 #   staging     straight after the build, in the same run
-#   production  a PROMOTE: a later workflow_dispatch passes the staging run's id
-#               and artifact name, and the same bytes are deployed to production
+#   production  a PROMOTE: a later workflow_dispatch passes the staging run id
+#               (the artifact is found from it), and the same bytes go to production
 #
 # A promote refuses anything that isn't a successful run of this repo's own
 # workflow on its default branch, so production can only receive a build that
@@ -22,9 +22,10 @@ on:
         required: true
         type: string
       artifact:
-        description: Artifact name from site-build.yml
-        required: true
+        description: Artifact name from site-build.yml. Empty with source-run-id = the run's single site-* artifact.
+        required: false
         type: string
+        default: ''
       source-run-id:
         description: Run that built the artifact. Empty = this run (the staging deploy right after a build).
         required: false
@@ -57,9 +58,11 @@ jobs:
       WRANGLER_SEND_METRICS: 'false'
     steps:
       - name: Validate
+        id: validate
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_RUN: ${{ inputs.source-run-id }}
+          ARTIFACT: ${{ inputs.artifact }}
         run: |
           case "${{ inputs.environment }}" in staging|production) ;; *)
             echo "::error::environment must be staging or production"; exit 1;; esac
@@ -73,19 +76,25 @@ jobs:
             echo "source run $SOURCE_RUN: branch=$branch conclusion=$conclusion sha=$sha"
             [ "$branch" = "$default" ] || { echo "::error::refusing to promote a build from '$branch' (only $default)"; exit 1; }
             [ "$conclusion" = success ] || { echo "::error::source run did not succeed ($conclusion); it may not have reached staging"; exit 1; }
+            if [ -z "$ARTIFACT" ]; then
+              ARTIFACT=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/artifacts" --jq '[.artifacts[] | select(.name | startswith("site-")) | select(.expired | not) | .name] | if length == 1 then .[0] else "" end')
+              [ -n "$ARTIFACT" ] || { echo "::error::run $SOURCE_RUN has no single unexpired site-* artifact (builds are kept 90 days)"; exit 1; }
+            fi
             {
               echo "### Promoting to ${{ inputs.environment }}"
               echo ""
               echo "| | |"; echo "|---|---|"
               echo "| source run | [$SOURCE_RUN]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN) |"
               echo "| commit | \`$sha\` |"
-              echo "| artifact | \`${{ inputs.artifact }}\` |"
+              echo "| artifact | \`$ARTIFACT\` |"
             } >> "$GITHUB_STEP_SUMMARY"
           fi
+          [ -n "$ARTIFACT" ] || { echo "::error::no artifact given"; exit 1; }
+          echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
 
       - uses: actions/download-artifact@v4
         with:
-          name: ${{ inputs.artifact }}
+          name: ${{ steps.validate.outputs.artifact }}
           path: site
           run-id: ${{ inputs.source-run-id != '' && inputs.source-run-id || github.run_id }}
           github-token: ${{ github.token }}
