@@ -1,0 +1,105 @@
+name: Site deploy
+
+# Deploy a build produced by site-build.yml to one environment. Used twice:
+#
+#   staging     straight after the build, in the same run
+#   production  a PROMOTE: a later workflow_dispatch passes the staging run's id
+#               and artifact name, and the same bytes are deployed to production
+#
+# A promote refuses anything that isn't a successful run of this repo's own
+# workflow on its default branch, so production can only receive a build that
+# was built from main and deployed to staging first.
+#
+# Top-level wrangler.jsonc stays non-deployable (each env carries name, assets
+# and routes), so the environment below is the only thing that decides where
+# the build goes.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: staging | production (wrangler env AND GitHub environment)
+        required: true
+        type: string
+      artifact:
+        description: Artifact name from site-build.yml
+        required: true
+        type: string
+      source-run-id:
+        description: Run that built the artifact. Empty = this run (the staging deploy right after a build).
+        required: false
+        type: string
+        default: ''
+      wrangler-version:
+        description: Pinned so a wrangler release can't change a deploy between two runs
+        required: false
+        type: string
+        default: '4.131.2'
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Bind the GitHub environment so production can require reviewers.
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: site-deploy-${{ github.repository }}-${{ inputs.environment }}
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - name: Validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.source-run-id }}
+        run: |
+          case "${{ inputs.environment }}" in staging|production) ;; *)
+            echo "::error::environment must be staging or production"; exit 1;; esac
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || { echo "::error::secrets.CLOUDFLARE_API_TOKEN is not set on the calling repo"; exit 1; }
+          if [ -n "$SOURCE_RUN" ]; then
+            # A promote. The build must come from a successful run of this repo,
+            # on its default branch, whose staging deploy succeeded.
+            run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN")
+            default=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
+            branch=$(jq -r .head_branch <<<"$run"); conclusion=$(jq -r .conclusion <<<"$run"); sha=$(jq -r .head_sha <<<"$run")
+            echo "source run $SOURCE_RUN: branch=$branch conclusion=$conclusion sha=$sha"
+            [ "$branch" = "$default" ] || { echo "::error::refusing to promote a build from '$branch' (only $default)"; exit 1; }
+            [ "$conclusion" = success ] || { echo "::error::source run did not succeed ($conclusion); it may not have reached staging"; exit 1; }
+            {
+              echo "### Promoting to ${{ inputs.environment }}"
+              echo ""
+              echo "| | |"; echo "|---|---|"
+              echo "| source run | [$SOURCE_RUN]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN) |"
+              echo "| commit | \`$sha\` |"
+              echo "| artifact | \`${{ inputs.artifact }}\` |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: site
+          run-id: ${{ inputs.source-run-id != '' && inputs.source-run-id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Show build
+        working-directory: site
+        run: |
+          cat BUILD.json
+          grep -q '"account_id"' wrangler.jsonc || { echo "::error::wrangler.jsonc must pin account_id"; exit 1; }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Deploy
+        working-directory: site
+        run: npx --yes "wrangler@${{ inputs.wrangler-version }}" deploy --env "${{ inputs.environment }}"

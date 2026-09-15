@@ -1,0 +1,150 @@
+name: Site build
+
+# Build a static site ONCE and keep the result as a workflow artifact, so the
+# exact bytes deployed to staging are the bytes later promoted to production
+# (site-deploy.yml). Nothing is rebuilt between environments: a promote cannot
+# pick up a dependency that changed, a different build-time env, or a newer
+# commit by accident.
+#
+# The artifact holds the site's wrangler.jsonc plus its built assets directory,
+# laid out exactly as in the repo, and a BUILD.json recording where it came from.
+#
+# Typical caller (the site repo's own workflow):
+#
+#   jobs:
+#     build:
+#       uses: live9tech/live9-actions/.github/workflows/site-build.yml@v2
+#       with: { build-command: "npm run build", assets-dir: out }
+#     staging:
+#       needs: build
+#       uses: live9tech/live9-actions/.github/workflows/site-deploy.yml@v2
+#       secrets: { CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }} }
+#       with: { environment: staging, artifact: ${{ needs.build.outputs.artifact }} }
+
+on:
+  workflow_call:
+    inputs:
+      site-dir:
+        description: Directory containing wrangler.jsonc and the site's package.json, relative to the repo root
+        required: false
+        type: string
+        default: .
+      assets-dir:
+        description: Built output directory, relative to site-dir (Next export → out, Astro → dist)
+        required: false
+        type: string
+        default: out
+      install-command:
+        description: Run from site-dir. Defaults by lockfile (pnpm-lock.yaml, package-lock.json, bun.lock).
+        required: false
+        type: string
+        default: ''
+      build-command:
+        description: Run from site-dir
+        required: true
+        type: string
+      build-env:
+        description: Extra build-time env, one KEY=VALUE per line (static exports bake these in)
+        required: false
+        type: string
+        default: ''
+      node-version:
+        required: false
+        type: string
+        default: '24'
+      retention-days:
+        description: How long a build stays promotable
+        required: false
+        type: number
+        default: 90
+    outputs:
+      artifact:
+        description: Artifact name to hand to site-deploy.yml
+        value: ${{ jobs.build.outputs.artifact }}
+
+jobs:
+  build:
+    name: Build ${{ inputs.site-dir }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      artifact: ${{ steps.meta.outputs.artifact }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.site-dir }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check account is pinned
+        run: |
+          grep -q '"account_id"' wrangler.jsonc || { echo "::error::${{ inputs.site-dir }}/wrangler.jsonc must pin account_id"; exit 1; }
+
+      - name: Detect package manager
+        id: pm
+        run: |
+          if [ -f pnpm-lock.yaml ] || [ -f "$GITHUB_WORKSPACE/pnpm-lock.yaml" ]; then echo "pm=pnpm" >> "$GITHUB_OUTPUT"
+          elif [ -f bun.lock ] || [ -f bun.lockb ]; then echo "pm=bun" >> "$GITHUB_OUTPUT"
+          else echo "pm=npm" >> "$GITHUB_OUTPUT"; fi
+
+      - if: steps.pm.outputs.pm == 'pnpm'
+        uses: pnpm/action-setup@v4
+      - if: steps.pm.outputs.pm == 'bun'
+        uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: ${{ steps.pm.outputs.pm != 'bun' && steps.pm.outputs.pm || '' }}
+          cache-dependency-path: |
+            ${{ inputs.site-dir }}/pnpm-lock.yaml
+            ${{ inputs.site-dir }}/package-lock.json
+            pnpm-lock.yaml
+
+      # Install WITHOUT NODE_ENV=production: package managers skip devDependencies
+      # under it, and that's where the build toolchain lives.
+      - name: Install
+        env:
+          INSTALL: ${{ inputs.install-command }}
+          PM: ${{ steps.pm.outputs.pm }}
+        run: |
+          if [ -n "$INSTALL" ]; then eval "$INSTALL"
+          elif [ "$PM" = pnpm ]; then pnpm install --frozen-lockfile
+          elif [ "$PM" = bun ]; then bun install --frozen-lockfile
+          else npm ci; fi
+
+      # build-env goes through an env var, not interpolated into the script, so
+      # a value containing quotes or $ can't rewrite the shell.
+      - name: Build
+        env:
+          BUILD_ENV: ${{ inputs.build-env }}
+          BUILD: ${{ inputs.build-command }}
+        run: |
+          while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            [ -n "$line" ] && export "$line"
+          done <<< "$BUILD_ENV"
+          eval "$BUILD"
+          test -d "${{ inputs.assets-dir }}" || { echo "::error::build did not produce ${{ inputs.assets-dir }}/"; exit 1; }
+
+      - name: Record provenance
+        id: meta
+        run: |
+          artifact="site-${GITHUB_SHA::12}-${GITHUB_RUN_ID}"
+          jq -n --arg repo "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" --arg ref "$GITHUB_REF_NAME" \
+                --arg run "$GITHUB_RUN_ID" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg dir "${{ inputs.site-dir }}" \
+                --arg assets "${{ inputs.assets-dir }}" \
+            '{repo:$repo, sha:$sha, ref:$ref, run_id:$run, built_at:$at, site_dir:$dir, assets_dir:$assets}' > BUILD.json
+          cat BUILD.json
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.artifact }}
+          retention-days: ${{ inputs.retention-days }}
+          if-no-files-found: error
+          include-hidden-files: true
+          path: |
+            ${{ inputs.site-dir }}/wrangler.jsonc
+            ${{ inputs.site-dir }}/BUILD.json
+            ${{ inputs.site-dir }}/${{ inputs.assets-dir }}
