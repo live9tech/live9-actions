@@ -88,12 +88,19 @@ jobs:
           if [ -f pnpm-lock.yaml ] || [ -f "$GITHUB_WORKSPACE/pnpm-lock.yaml" ]; then echo "pm=pnpm" >> "$GITHUB_OUTPUT"
           elif [ -f bun.lock ] || [ -f bun.lockb ]; then echo "pm=bun" >> "$GITHUB_OUTPUT"
           else echo "pm=npm" >> "$GITHUB_OUTPUT"; fi
+          # pnpm/action-setup reads packageManager from one package.json and
+          # fails if it isn't there. A site in a workspace (apps/docs) usually
+          # declares it only at the repo root, so fall back to that.
+          json=package.json
+          grep -q '"packageManager"' package.json 2>/dev/null || json=""
+          if [ -z "$json" ]; then json="$GITHUB_WORKSPACE/package.json"; fi
+          echo "pm_json=$json" >> "$GITHUB_OUTPUT"
 
       - if: steps.pm.outputs.pm == 'pnpm'
         uses: pnpm/action-setup@v4
         with:
-          # The pnpm version comes from packageManager in the site's own package.json.
-          package_json_file: ${{ inputs.site-dir }}/package.json
+          # packageManager from the site's package.json, or the repo root's.
+          package_json_file: ${{ steps.pm.outputs.pm_json == 'package.json' && format('{0}/package.json', inputs.site-dir) || 'package.json' }}
       - if: steps.pm.outputs.pm == 'bun'
         uses: oven-sh/setup-bun@v2
       - uses: actions/setup-node@v4

@@ -98,5 +98,8 @@ jobs:
 Pin callers to a tag (`@v1`, `@v2`), not `@main`. A change here then only
 reaches a product once it moves to the new tag.
 
-- `v1`: `static-site.yml` (build and deploy in one job).
+- `v1`: `static-site.yml` (build and deploy in one job). Still what the docs
+  sites' PR previews use: v2 has no preview mode.
 - `v2`: adds `site-build.yml` and `site-deploy.yml`. `static-site.yml` is unchanged.
+- `v2.1`: `site-build` takes `packageManager` from the repo root when the site's
+  own `package.json` has none, so a site inside a workspace (`apps/docs`) builds.
